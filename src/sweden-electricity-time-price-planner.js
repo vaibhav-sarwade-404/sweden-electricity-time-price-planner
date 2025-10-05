@@ -1,6 +1,9 @@
 const TARGET_CURRENCY_UNIT = "SEK/kWh";
 const API_BASE_URL = "https://www.elprisetjustnu.se/api/v1/prices/";
-const CACHE_KEY = "electricity_prices_cache";
+const cacheKeys = {
+  electricityPrices: "electricity_prices_cache",
+  userPreferences: "user_preferences",
+};
 const CHART_COLORS = {
   base: "rgb(59, 130, 246)", // Blue-500
   highlight: "rgb(22, 163, 74)", // Green-700
@@ -31,6 +34,12 @@ const currentTimeDisplay = document.getElementById("current-time");
 const disclaimerNote = document.getElementById("disclaimer-note");
 const chartContainer = document.getElementById("chart-container");
 const priceChartCanvas = document.getElementById("priceChart");
+
+// Determine if we should fetch tomorrow's prices based on current time
+const today = new Date();
+const shouldFetchNextDayPrice =
+  today.getHours() > 13 ||
+  (today.getHours() === 13 && today.getMinutes() >= 15);
 
 // LLM Elements
 const strategyGeneratorContainer = document.getElementById(
@@ -87,14 +96,14 @@ function applyUserFees(basePrice, vat, energyTax, gridFee) {
  * Parses the raw API price data and annotates them, applying user fees.
  */
 function parsePriceData(rawData, userFees) {
-  if (!Array.isArray(rawData) || rawData.length === 0) {
+  if (!Array.isArray(rawData) || !rawData.length) {
     return [];
   }
   const now = new Date();
   const nowTime = now.getTime();
 
   return rawData
-    .map((item, index) => {
+    .map((item) => {
       const timestamp = new Date(item.time_start);
 
       const finalPrice = applyUserFees(
@@ -178,12 +187,12 @@ async function fetchPrices(date, zone, maxRetries = 3) {
  * Checks local storage cache first, then fetches if data is missing or stale.
  */
 async function checkCacheAndFetchPrices(zone) {
-  const today = new Date();
   const todayDateStr = today.toISOString().split("T")[0];
 
   let cachedData;
   try {
-    const cacheStr = localStorage.getItem(CACHE_KEY);
+    const cacheStr = localStorage.getItem(cacheKeys.electricityPrices);
+
     if (cacheStr) {
       cachedData = JSON.parse(cacheStr);
     }
@@ -192,13 +201,24 @@ async function checkCacheAndFetchPrices(zone) {
   }
 
   // Check cache validity: must exist, be for the current zone, and cover today's date
-  if (
-    cachedData &&
-    cachedData.zone === zone &&
-    cachedData.dateFetched === todayDateStr
-  ) {
+  if (cachedData?.zone === zone && cachedData?.dateFetched === todayDateStr) {
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
+
+    /**
+     * If tomorrow's data is missing, we will fetch it below if it is post 13:00 today.
+     */
+    if (!cachedData.tomorrow?.length) {
+      if (shouldFetchNextDayPrice) {
+        const tomorrowsData = await fetchPrices(tomorrow, zone);
+        cachedData.tomorrow = tomorrowsData.rawData || [];
+        // Update cache with newly fetched tomorrow data
+        localStorage.setItem(
+          cacheKeys.electricityPrices,
+          JSON.stringify(cachedData)
+        );
+      }
+    }
 
     const statusMessage = `Today: ✅ Cached. Tomorrow: ✅ Cached.`;
 
@@ -217,10 +237,12 @@ async function checkCacheAndFetchPrices(zone) {
   // Fetch new data (Today and Tomorrow)
   const tomorrow = new Date(today);
   tomorrow.setDate(tomorrow.getDate() + 1);
-
+  const tomorrowsFetch = shouldFetchNextDayPrice
+    ? fetchPrices(tomorrow, zone)
+    : Promise.resolve({ rawData: [] });
   const [todayResult, tomorrowResult] = await Promise.all([
     fetchPrices(today, zone),
-    fetchPrices(tomorrow, zone),
+    tomorrowsFetch,
   ]);
 
   let statusMessage = [
@@ -237,9 +259,9 @@ async function checkCacheAndFetchPrices(zone) {
   );
 
   // Save to cache if data was successfully fetched for today and tomorrow
-  if (todayRaw.length > 0 && tomorrowRaw.length > 0) {
+  if (todayRaw.length || tomorrowRaw.length) {
     localStorage.setItem(
-      CACHE_KEY,
+      cacheKeys.electricityPrices,
       JSON.stringify({
         dateFetched: todayDateStr,
         zone: zone,
@@ -347,8 +369,7 @@ function renderPriceChart(allPrices, bestSlots) {
       hour: "2-digit",
       minute: "2-digit",
     });
-    const day = p.dayTag.split(" ")[0];
-    return `${day} ${time}`;
+    return `${p.dayTag} ${time}`;
   });
   const prices = allPrices.map((p) => p.calculated_price);
 
@@ -472,30 +493,27 @@ function renderSlot(slot) {
                 </li>`;
     })
     .join("");
+  const { totalCost, averagePrice, rank } = slot;
+  const formattedTotalCost = totalCost.toFixed(4);
+  const formattedAveragePrice = averagePrice.toFixed(4);
 
   return `
                 <div class="p-4 rounded-lg border shadow-lg ${rankClass} transition-shadow duration-300 hover:shadow-xl">
                     <h3 class="font-extrabold text-xl mb-1 flex items-center justify-between">
-                        <span class="text-gray-700">#${
-                          slot.rank
-                        } Best Slot (${hours} Hours)</span>
-                        <span class="text-sm font-semibold px-2 py-1 rounded-full ${
-                          slot.rank === 1 ? "bg-green-300" : "bg-blue-200"
+                        <span class="text-gray-700">#${rank} Best Slot (${hours} Hours)</span>
+                        <span class="text-sm font-semibold px-2 py-1 rounded-full min-w-[30%] ${
+                          rank === 1 ? "bg-green-300" : "bg-blue-200"
                         } text-gray-800">${dayTag}</span>
                     </h3>
                     
                     <p class="font-extrabold text-3xl ${priceColor} mt-1">${startTimeStr} - ${endTimeStr}</p>
                     <p class="mt-2 text-lg text-gray-600">
                         <span class="font-semibold">Total Cost (per 1 kWh/period):</span> 
-                        <span class="font-extrabold ${priceColor}">${slot.totalCost.toFixed(
-    4
-  )} SEK</span>
+                        <span class="font-extrabold ${priceColor}">${formattedTotalCost} ${TARGET_CURRENCY_UNIT}</span>
                     </p>
                     <p class="text-lg text-gray-600">
                         <span class="font-semibold">Average Calculated Price:</span> 
-                        <span class="font-extrabold ${priceColor}">${slot.averagePrice.toFixed(
-    4
-  )} ${TARGET_CURRENCY_UNIT}</span>
+                        <span class="font-extrabold ${priceColor}">${formattedAveragePrice} ${TARGET_CURRENCY_UNIT}</span>
                     </p>
 
                     <details class="mt-4 cursor-pointer">
@@ -639,11 +657,14 @@ async function handleCalculate() {
   const minutesNeeded = parseInt(minutesNeededInput.value);
   const topSlotsNeeded = parseInt(topSlotsNeededInput.value);
   const slotValue = timeSlotSelect.value;
-  const [startHour, endHour] = slotValue.split("-").map(Number);
+  // Get start and end hour from selected option's data attributes
+  const selectedOption = timeSlotSelect.options[timeSlotSelect.selectedIndex];
+  const startHour = Number(selectedOption.getAttribute("data-hour-start"));
+  const endHour = Number(selectedOption.getAttribute("data-hour-end"));
 
   // Save the selected inputs to localStorage for persistence
   localStorage.setItem(
-    "userPreferences",
+    cacheKeys.userPreferences,
     JSON.stringify({
       zone,
       minutesNeeded,
@@ -686,7 +707,6 @@ async function handleCalculate() {
   // Immediately hide status box and LLM container for seamless start
   dataStatusBox.classList.add("hidden");
   strategyGeneratorContainer.classList.add("hidden");
-  disclaimerNote.classList.remove("hidden");
 
   try {
     // 1. Fetch data (will use cache if available and fresh)
@@ -710,7 +730,7 @@ async function handleCalculate() {
       "text-green-800"
     );
 
-    if (allRawPrices.length === 0) {
+    if (!allRawPrices.length) {
       messageBox.innerHTML =
         '<p class="text-red-600 font-bold">Could not load any price data for today or tomorrow. Check the status box above for details.</p>';
       dataStatusBox.classList.remove("bg-green-100", "bg-green-200");
@@ -721,31 +741,79 @@ async function handleCalculate() {
 
     // 2. Parse data and apply user fees
     const allPrices = parsePriceData(allRawPrices, userFees);
-
     // 3. Filter prices: Must be in the future AND within the selected time window
-    const availablePrices =
-      allPrices ||
-      allPrices.filter((p) => {
-        if (p.isPast) return false;
+    const availablePrices = allPrices.filter((p) => {
+      if (p.isPast) return false;
 
-        const priceHour = p.timestamp.getHours();
-        if (startHour !== 0 || endHour !== 24) {
-          return priceHour >= startHour && priceHour < endHour;
-        }
-        return true;
-      });
+      const priceHour = p.timestamp.getHours();
+      const priceDate = p.timestamp.toISOString().split("T")[0];
+      const todayDate = new Date().toISOString().split("T")[0];
+      const tomorrowDate = new Date(Date.now() + 24 * 60 * 60 * 1000)
+        .toISOString()
+        .split("T")[0];
+
+      if (slotValue === "today-full") {
+        return priceDate === todayDate;
+      }
+      if (slotValue === "tomorrow-full") {
+        return priceDate === tomorrowDate;
+      }
+      // If within a specific time window, filter by hour range for both days
+      return priceHour >= startHour && priceHour < endHour;
+    });
+
     const totalSlotsAvailable = availablePrices.length;
     const totalMinutesAvailable = totalSlotsAvailable * 15;
     const hoursNeeded = minutesNeeded / 60;
     if (totalMinutesAvailable < minutesNeeded) {
-      messageBox.innerHTML = `
-                        <p class="text-red-600 font-bold">
-                            ⚠️ Not enough future periods available (${minutesNeeded} minutes needed, but only ${totalMinutesAvailable} available in the selected window).
-                        </p>
-                        <p class="text-gray-500 mt-2 text-sm">
-                            Try reducing the duration or widening the search window.
-                        </p>
-                    `;
+      const zoneName = priceZoneSelect.selectedOptions[0].dataset.zoneName;
+      let errorMsg = "";
+      if (slotValue === "tomorrow-full") {
+        if (!shouldFetchNextDayPrice) {
+          errorMsg = `
+            <p class="text-yellow-700 font-bold">
+            ⚠️ Tomorrow's prices are not yet published (${minutesNeeded} minutes needed, but only ${totalMinutesAvailable} available).
+            </p>
+            <p class="text-gray-500 mt-2 text-sm">
+            Prices for tomorrow are typically published after 13:00, but can sometimes take longer (usually by 13:15). If it's past 13:15 and prices are still unavailable, please check <a href="https://www.elprisetjustnu.se/i/${zoneName}/imorgon" target="_blank" class="underline text-blue-600">elprisetjustnu.se</a> for your zone to confirm availability, then try again here.
+            </p>
+            <p class="text-gray-500 mt-2 text-sm">
+            Alternatively, try reducing the duration or widening the search window.
+            </p>
+          `;
+        } else {
+          errorMsg = `
+          <p class="text-red-600 font-bold">
+          ⚠️ Not enough future periods available for tomorrow (${minutesNeeded} minutes needed, but only ${totalMinutesAvailable} available).
+          </p>
+          <p class="text-gray-500 mt-2 text-sm">
+          If it's after 13:15 and still unavailable, check <a href="https://www.elprisetjustnu.se/i/${zoneName}/imorgon" target="_blank" class="underline text-blue-600">elprisetjustnu.se</a> for your zone to confirm availability, then try again.
+          </p>
+          <p class="text-gray-500 mt-2 text-sm">
+          Alternatively, try reducing the duration or widening the search window.
+          </p>
+        `;
+        }
+      } else if (slotValue === "today-full") {
+        errorMsg = `
+        <p class="text-red-600 font-bold">
+        ⚠️ All available time slots for today have already passed or been consumed (${minutesNeeded} minutes needed, but only ${totalMinutesAvailable} available).
+        </p>
+        <p class="text-gray-500 mt-2 text-sm">
+        Only future periods are shown here. Try reducing the duration or widening the search window.
+        </p>
+      `;
+      } else {
+        errorMsg = `
+        <p class="text-red-600 font-bold">
+        ⚠️ Not enough future periods available in the selected window (${minutesNeeded} minutes needed, but only ${totalMinutesAvailable} available).
+        </p>
+        <p class="text-gray-500 mt-2 text-sm">
+        Try reducing the duration or widening the search window.
+        </p>
+      `;
+      }
+      messageBox.innerHTML = errorMsg;
       chartContainer.classList.add("hidden");
       return;
     }
@@ -793,6 +861,7 @@ async function handleCalculate() {
     // Scroll to results
     setTimeout(() => {
       chartContainer.scrollIntoView({ behavior: "smooth" });
+      disclaimerNote.classList.remove("hidden");
     }, 100);
   } catch (error) {
     console.error("Calculation Error:", error);
@@ -820,13 +889,13 @@ document.addEventListener("DOMContentLoaded", () => {
       zone: "SE4",
       minutesNeeded: "60",
       topSlotsNeeded: "4",
-      timeSlot: "0-24",
+      timeSlot: "today-full",
       gridFee: "0",
       energyTax: "0",
       vatPercentage: "0",
     };
     const prefsStr =
-      localStorage.getItem("userPreferences") ||
+      localStorage.getItem(cacheKeys.userPreferences) ||
       JSON.stringify(defaultPreferences);
     if (prefsStr) {
       const prefs = JSON.parse(prefsStr);
