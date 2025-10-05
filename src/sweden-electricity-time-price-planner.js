@@ -499,9 +499,9 @@ function renderSlot(slot) {
 
   return `
                 <div class="p-4 rounded-lg border shadow-lg ${rankClass} transition-shadow duration-300 hover:shadow-xl">
-                    <h3 class="font-extrabold text-xl mb-1 flex items-center justify-between">
-                        <span class="text-gray-700">#${rank} Best Slot (${hours} Hours)</span>
-                        <span class="text-sm font-semibold px-2 py-1 rounded-full min-w-[30%] ${
+                    <h3 class="font-extrabold text-xl mb-2 flex items-center justify-between">
+                        <span class="text-gray-700">#${rank}</span>
+                        <span class="text-sm font-semibold px-2 py-1 rounded-full min-w-[30%] md:min-w-0 ${
                           rank === 1 ? "bg-green-300" : "bg-blue-200"
                         } text-gray-800">${dayTag}</span>
                     </h3>
@@ -835,15 +835,18 @@ async function handleCalculate() {
       chartContainer.classList.add("hidden");
     } else {
       messageBox.innerHTML = `
-                        <p class="mb-3 text-green-700 text-lg font-bold">✅ Found ${
-                          results.length
-                        } Best Non-Overlapping Time Slot${
-        results.length !== 1 ? "s" : ""
-      }!</p>
-                        <p class="text-gray-600">Calculated across the next ${totalSlotsAvailable.toFixed(
-                          1
-                        )} hours of available data using your custom fees.</p>
-                    `;
+      <p class="mb-3 text-green-700 text-lg font-bold">✅ Found ${
+        results.length
+      } Best Non-Overlapping Time Slot${results.length !== 1 ? "s" : ""}!</p>
+      <p class="text-gray-600">
+        Calculated across the next ${totalSlotsAvailable.toFixed(
+          1
+        )} hours of available data using your custom fees.<br>
+        <span class="font-semibold">Requested duration:</span> ${hoursNeeded.toFixed(
+          2
+        )} hours.
+      </p>
+      `;
       // 5. Render Chart
       renderPriceChart(allPrices, results);
 
