@@ -24,7 +24,7 @@ npm install
 To build the CSS for the app, run:
 
 ```bash
-npx @tailwindcss/cli -i ./src/input.css -o ./src/sweden-energy-price-planner.css
+npx @tailwindcss/cli -i ./src/input.css -o ./src/sweden-electricity-time-price-planner.css
 ```
 
 Or use:
